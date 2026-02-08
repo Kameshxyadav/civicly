@@ -1,0 +1,14 @@
+{
+  "class_names": [
+    "cardboard",
+    "e-waste",
+    "glass",
+    "medical",
+    "metal",
+    "organic",
+    "paper",
+    "plastic"
+  ],
+  "model_name": "microsoft/resnet-50",
+  "num_classes": 8
+}
