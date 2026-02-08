@@ -15,6 +15,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  --page-gutter: clamp(1rem, 3vw, 1.5rem);
 }
 
 /* ───────────────── TOPBAR ───────────────── */
@@ -28,7 +29,7 @@ body {
   border-bottom: 1px solid #e5e5e5;
   display: flex;
   align-items: center;
-  padding: 0 1.25rem;
+  padding: 0 var(--page-gutter);
   z-index: 100;
 }
 
@@ -112,7 +113,8 @@ body {
 .container {
   max-width: 880px;
   margin: 0 auto;
-  padding: 3rem 1.5rem 4rem;
+  width: 100%;
+  padding: 3rem var(--page-gutter) 4rem;
 }
 main, section {
   padding-top: 56px;
@@ -122,7 +124,7 @@ main, section {
 .hero {
   display: flex;
   justify-content: center;
-  padding: 5rem 1.5rem 3rem;
+  padding: 5rem var(--page-gutter) 3rem;
 }
 .hero-content {
   max-width: 600px;
@@ -250,6 +252,14 @@ input, select {
   background: #f9f9f9;
 }
 
+/* ───────────────── CHART ───────────────── */
+#wasteChart {
+  display: block;
+  width: min(280px, 100%) !important;
+  max-height: 280px;
+  margin: 0 auto;
+}
+
 /* ───────────────── MAP ───────────────── */
 .home-map {
   height: 400px;
@@ -285,7 +295,7 @@ input, select {
 /* ───────────────── FOOTER ───────────────── */
 footer {
   text-align: center;
-  padding: 1rem 1.5rem;
+  padding: 1rem var(--page-gutter);
   font-size: 0.8125rem;
   color: #a3a3a3;
   background: #1a1a1a;
@@ -293,10 +303,9 @@ footer {
 
 /* ───────────────── RESPONSIVE ───────────────── */
 @media (max-width: 640px) {
-  .container {
-    padding: 2rem 1.25rem 3rem;
-  }
+  body { --page-gutter: 1.25rem; }
+  .container { padding: 2rem var(--page-gutter) 3rem; }
   .hero {
-    padding: 3rem 1.25rem 2rem;
+    padding: 3rem var(--page-gutter) 2rem;
   }
 }

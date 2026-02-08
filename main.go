@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"hash/fnv"
+	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -32,15 +35,15 @@ type pin struct {
 }
 
 type predictionResponse struct {
-	ID         int64            `json:"id"`
-	ImageName  string           `json:"image_name"`
-	UserLat    float64          `json:"user_lat"`
-	UserLng    float64          `json:"user_lng"`
-	TopLabel   string           `json:"top_label"`
-	TopPct     int              `json:"top_pct"`
-	Items      []predictionItem `json:"items"`
-	Pins       []pin            `json:"pins"`
-	CreatedAt  string           `json:"created_at"`
+	ID        int64            `json:"id"`
+	ImageName string           `json:"image_name"`
+	UserLat   float64          `json:"user_lat"`
+	UserLng   float64          `json:"user_lng"`
+	TopLabel  string           `json:"top_label"`
+	TopPct    int              `json:"top_pct"`
+	Items     []predictionItem `json:"items"`
+	Pins      []pin            `json:"pins"`
+	CreatedAt string           `json:"created_at"`
 }
 
 type listing struct {
@@ -75,19 +78,28 @@ type facility struct {
 	DLng float64
 }
 
+var inferencePython = "python3"
+
 var facilitiesByType = map[string][]facility{
-	"Metal":   {{Name: "Metal Factory", Icon: "🏭", DLat: 0.01, DLng: 0.01}, {Name: "Scrap Yard", Icon: "🔩", DLat: -0.01, DLng: 0.008}},
-	"Plastic": {{Name: "Plastic Recycling Center", Icon: "♻️", DLat: 0.01, DLng: 0.005}},
-	"Paper":   {{Name: "Paper Recycling Mill", Icon: "📄", DLat: -0.008, DLng: 0.01}},
-	"E-Waste": {{Name: "Authorized E-Waste Center", Icon: "💻", DLat: 0.01, DLng: -0.01}},
-	"Medical": {{Name: "Medical Waste Facility", Icon: "🏥", DLat: -0.01, DLng: -0.008}},
-	"Glass":   {{Name: "Glass Recycling Plant", Icon: "🍾", DLat: 0.007, DLng: -0.009}},
-	"Organic": {{Name: "Composting Unit", Icon: "🌱", DLat: -0.006, DLng: 0.007}},
+	"cardboard": {{Name: "Paper Recovery Facility", Icon: "📦", DLat: 0.007, DLng: 0.009}},
+	"e-waste":   {{Name: "Authorized E-Waste Center", Icon: "💻", DLat: 0.01, DLng: -0.01}},
+	"glass":     {{Name: "Glass Recycling Plant", Icon: "🍾", DLat: 0.007, DLng: -0.009}},
+	"medical":   {{Name: "Medical Waste Facility", Icon: "🏥", DLat: -0.01, DLng: -0.008}},
+	"metal":     {{Name: "Metal Factory", Icon: "🏭", DLat: 0.01, DLng: 0.01}, {Name: "Scrap Yard", Icon: "🔩", DLat: -0.01, DLng: 0.008}},
+	"organic":   {{Name: "Composting Unit", Icon: "🌱", DLat: -0.006, DLng: 0.007}},
+	"paper":     {{Name: "Paper Recycling Mill", Icon: "📄", DLat: -0.008, DLng: 0.01}},
+	"plastic":   {{Name: "Plastic Recycling Center", Icon: "♻️", DLat: 0.01, DLng: 0.005}},
 }
 
-var labels = []string{"Plastic", "Metal", "Paper", "E-Waste", "Medical", "Glass", "Organic"}
-
 func main() {
+	pythonCmd, err := resolveInferencePython()
+	if err != nil {
+		log.Printf("warning: model runtime unavailable: %v", err)
+	} else {
+		inferencePython = pythonCmd
+		log.Printf("model runtime: %s", inferencePython)
+	}
+
 	db, err := sql.Open("sqlite", "file:civicly.db?_pragma=foreign_keys(1)")
 	if err != nil {
 		log.Fatal(err)
@@ -219,7 +231,34 @@ func handlePredict(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		items := generatePredictionItems(header.Filename)
+		ext := filepath.Ext(header.Filename)
+		tmpFile, err := os.CreateTemp("", "civicly-upload-*"+ext)
+		if err != nil {
+			http.Error(w, "failed to process upload", http.StatusInternalServerError)
+			return
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+
+		if _, err := io.Copy(tmpFile, file); err != nil {
+			_ = tmpFile.Close()
+			http.Error(w, "failed to process upload", http.StatusInternalServerError)
+			return
+		}
+		if err := tmpFile.Close(); err != nil {
+			http.Error(w, "failed to process upload", http.StatusInternalServerError)
+			return
+		}
+
+		inferCtx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+		items, err := runModelInference(inferCtx, tmpPath)
+		if err != nil {
+			log.Printf("inference error: %v", err)
+			http.Error(w, "model inference failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
 		top := items[0]
 		for _, it := range items[1:] {
 			if it.Pct > top.Pct {
@@ -457,40 +496,137 @@ func handleListingAction(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func generatePredictionItems(fileName string) []predictionItem {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(strings.ToLower(filepath.Base(fileName))))
-	seed := h.Sum64()
+type modelInferenceOutput struct {
+	Items []struct {
+		Label string  `json:"label"`
+		Score float64 `json:"score"`
+	} `json:"items"`
+}
 
-	first := int(seed % uint64(len(labels)))
-	second := int((seed / 7) % uint64(len(labels)))
-	third := int((seed / 11) % uint64(len(labels)))
-	if second == first {
-		second = (second + 1) % len(labels)
-	}
-	if third == first || third == second {
-		third = (third + 2) % len(labels)
+func runModelInference(ctx context.Context, imagePath string) ([]predictionItem, error) {
+	cmd := exec.CommandContext(ctx, inferencePython, "predict.py", "--image", imagePath, "--top-k", "3")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("python inference failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 
-	base := []int{40 + int(seed%16), 25 + int((seed/3)%16), 10 + int((seed/5)%16)}
-	total := base[0] + base[1] + base[2]
-	pcts := []int{
-		int(math.Round(float64(base[0]) * 100 / float64(total))),
-		int(math.Round(float64(base[1]) * 100 / float64(total))),
+	var raw modelInferenceOutput
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		return nil, fmt.Errorf("invalid inference response: %w", err)
 	}
-	pcts = append(pcts, 100-pcts[0]-pcts[1])
+	if len(raw.Items) == 0 {
+		return nil, fmt.Errorf("inference returned no classes")
+	}
 
-	return []predictionItem{
-		{Label: labels[first], Pct: pcts[0]},
-		{Label: labels[second], Pct: pcts[1]},
-		{Label: labels[third], Pct: pcts[2]},
+	// Convert probabilities to rounded percentages while preserving total=100.
+	total := 0
+	items := make([]predictionItem, 0, len(raw.Items))
+	for _, it := range raw.Items {
+		pct := int(it.Score * 100)
+		total += pct
+		items = append(items, predictionItem{
+			Label: humanizeLabel(it.Label),
+			Pct:   pct,
+		})
 	}
+	if len(items) > 0 && total < 100 {
+		items[0].Pct += 100 - total
+	}
+	return items, nil
+}
+
+func resolveInferencePython() (string, error) {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("CIVICLY_PYTHON")),
+		".venv/bin/python3",
+		"venv/bin/python3",
+		"python3",
+	}
+
+	var errs []error
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+
+		path, err := resolveExecutable(candidate)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", candidate, err))
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		cmd := exec.CommandContext(ctx, path, "-c", "import torch, transformers, PIL")
+		out, checkErr := cmd.CombinedOutput()
+		cancel()
+		if checkErr != nil {
+			errs = append(errs, fmt.Errorf("%s missing deps: %s", path, strings.TrimSpace(string(out))))
+			continue
+		}
+		return path, nil
+	}
+
+	if len(errs) == 0 {
+		return "", errors.New("no python runtime candidates found")
+	}
+
+	msgs := make([]string, 0, len(errs))
+	for _, e := range errs {
+		msgs = append(msgs, e.Error())
+	}
+	return "", errors.New(strings.Join(msgs, "; "))
+}
+
+func resolveExecutable(name string) (string, error) {
+	if strings.Contains(name, "/") {
+		info, err := os.Stat(name)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("is a directory")
+		}
+		return name, nil
+	}
+	return exec.LookPath(name)
+}
+
+func humanizeLabel(label string) string {
+	key := normalizeLabel(label)
+	if key == "e-waste" {
+		return "E-Waste"
+	}
+
+	parts := strings.FieldsFunc(key, func(r rune) bool { return r == '-' || r == '_' || r == ' ' })
+	if len(parts) == 0 {
+		return label
+	}
+
+	for i := range parts {
+		if parts[i] == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func normalizeLabel(label string) string {
+	out := strings.ToLower(strings.TrimSpace(label))
+	out = strings.ReplaceAll(out, "_", "-")
+	return out
 }
 
 func buildPins(lat, lng float64, items []predictionItem) []pin {
 	pins := []pin{{Name: "Your Location", Lat: lat, Lng: lng, Icon: "📍", PinType: "user"}}
 	for _, it := range items {
-		for _, f := range facilitiesByType[it.Label] {
+		normalized := normalizeLabel(it.Label)
+		for _, f := range facilitiesByType[normalized] {
 			pins = append(pins, pin{
 				Name:    f.Name,
 				Lat:     lat + f.DLat,
@@ -500,6 +636,7 @@ func buildPins(lat, lng float64, items []predictionItem) []pin {
 			})
 		}
 	}
+	slices.SortFunc(pins[1:], func(a, b pin) int { return strings.Compare(a.Name, b.Name) })
 	return pins
 }
 
