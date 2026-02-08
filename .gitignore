@@ -1,0 +1,49 @@
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# -----------------------------
+# Go
+# -----------------------------
+bin/
+dist/
+*.test
+coverage.out
+*.coverprofile
+
+# -----------------------------
+# Local runtime / app data
+# -----------------------------
+civicly.db
+civicly.db-*
+*.log
+.env
+.env.*
+
+# Uploaded/tmp files
+tmp/
+uploads/
+
+# -----------------------------
+# ML training artifacts
+# -----------------------------
+waste_classifier_model/*.pth
+waste_classifier_model/training_plot.png
+
+# -----------------------------
+# Editor / OS
+# -----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
