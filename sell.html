@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sell • civicLy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <span class="brand" onclick="goHome()">← civicLy</span>
+</header>
+
+<div class="container">
+  <h1 class="page-title">Sell Material</h1>
+
+  <div class="card">
+    <input type="file">
+    <select>
+      <option>Metal</option>
+      <option>Plastic</option>
+      <option>Paper</option>
+      <option>E-Waste</option>
+      <option>Medical</option>
+      <option>Glass</option>
+      <option>Organic</option>
+    </select>
+    <input type="number" placeholder="Weight (kg)">
+    <input type="number" placeholder="Price">
+    <input type="tel" placeholder="Contact number">
+    <input type="text" id="sellLocation" disabled placeholder="Detecting location...">
+    <button class="btn btn-dark">Create Listing</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+  fetchUserLocation(loc => {
+    document.getElementById("sellLocation").value = loc;
+  });
+</script>
+</body>
+</html>
