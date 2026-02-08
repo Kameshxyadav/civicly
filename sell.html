@@ -17,7 +17,7 @@
 
   <div class="card">
     <input type="file">
-    <select>
+    <select id="sellMaterial">
       <option>Metal</option>
       <option>Plastic</option>
       <option>Paper</option>
@@ -26,19 +26,19 @@
       <option>Glass</option>
       <option>Organic</option>
     </select>
-    <input type="number" placeholder="Weight (kg)">
-    <input type="number" placeholder="Price">
-    <input type="tel" placeholder="Contact number">
+    <input type="number" id="sellWeight" placeholder="Weight (kg)">
+    <input type="number" id="sellPrice" placeholder="Price">
+    <input type="tel" id="sellContact" placeholder="Contact number">
     <input type="text" id="sellLocation" disabled placeholder="Detecting location...">
-    <button class="btn btn-dark">Create Listing</button>
+    <input type="hidden" id="sellLat">
+    <input type="hidden" id="sellLng">
+    <button class="btn btn-dark" onclick="submitSellListing()">Create Listing</button>
   </div>
 </div>
 
 <script src="app.js"></script>
 <script>
-  fetchUserLocation(loc => {
-    document.getElementById("sellLocation").value = loc;
-  });
+  initSellPage();
 </script>
 </body>
 </html>
