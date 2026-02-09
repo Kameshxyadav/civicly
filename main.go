@@ -577,7 +577,15 @@ func runModelInference(ctx context.Context, imagePath string) ([]predictionItem,
 	if len(items) > 0 && total < 100 {
 		items[0].Pct += 100 - total
 	}
-	return items, nil
+
+	// Drop items that rounded to 0% so they don't clutter results or the map.
+	filtered := make([]predictionItem, 0, len(items))
+	for _, it := range items {
+		if it.Pct > 0 {
+			filtered = append(filtered, it)
+		}
+	}
+	return filtered, nil
 }
 
 func resolveInferencePython() (string, error) {
