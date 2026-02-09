@@ -5,6 +5,7 @@
   <title>civicLy</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 </head>
 <body>
 
@@ -45,8 +46,24 @@
   </div>
 </div>
 
+<div class="container" style="padding-top:0;">
+  <div class="card">
+    <div class="card-label">Waste Heatmap</div>
+    <div class="heatmap-controls">
+      <select id="heatmapFilter">
+        <option value="all">All Waste Types</option>
+      </select>
+    </div>
+    <div id="heatmap" class="home-map"></div>
+    <p class="heatmap-hint" id="heatmapHint">Detecting your location...</p>
+  </div>
+</div>
+
 <footer><a href="admin.html" class="admin-link">Admin</a></footer>
 
 <script src="app.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script>initHeatmap();</script>
 </body>
 </html>

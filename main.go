@@ -96,6 +96,13 @@ type buyRequest struct {
 	BuyerContact string `json:"buyer_contact"`
 }
 
+type heatmapPoint struct {
+	Lat   float64 `json:"lat"`
+	Lng   float64 `json:"lng"`
+	Label string  `json:"label"`
+	Count int     `json:"count"`
+}
+
 type facility struct {
 	Name string
 	Icon string
@@ -153,6 +160,7 @@ func main() {
 	mux.HandleFunc("/api/me", withMethod(http.MethodGet, handleMe(db)))
 	mux.HandleFunc("/api/notifications", withMethod(http.MethodGet, handleGetNotifications(db)))
 	mux.HandleFunc("/api/notifications/read", withMethod(http.MethodPost, handleMarkNotificationsRead(db)))
+	mux.HandleFunc("/api/heatmap", withMethod(http.MethodGet, handleHeatmap(db)))
 	mux.HandleFunc("/api/admin/users", withMethod(http.MethodGet, handleAdminUsers(db)))
 	mux.HandleFunc("/api/admin/listings", withMethod(http.MethodGet, handleAdminListings(db)))
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
@@ -453,6 +461,36 @@ func handleGetPrediction(db *sql.DB) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+func handleHeatmap(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rows, err := db.Query(`
+			SELECT user_lat, user_lng, top_label, COUNT(*) as cnt
+			FROM predictions
+			GROUP BY user_lat, user_lng, top_label
+			ORDER BY cnt DESC
+		`)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var points []heatmapPoint
+		for rows.Next() {
+			var p heatmapPoint
+			if err := rows.Scan(&p.Lat, &p.Lng, &p.Label, &p.Count); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			points = append(points, p)
+		}
+		if points == nil {
+			points = []heatmapPoint{}
+		}
+		writeJSON(w, http.StatusOK, points)
 	}
 }
 

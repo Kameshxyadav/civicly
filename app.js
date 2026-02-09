@@ -526,6 +526,98 @@ async function loadAdminPanel() {
   } catch { /* ignore */ }
 }
 
+// ───────────────── Heatmap ─────────────────
+
+let heatmapInstance = null;
+let heatLayer = null;
+let allHeatmapData = [];
+
+async function initHeatmap() {
+  const mapEl = document.getElementById("heatmap");
+  const hintEl = document.getElementById("heatmapHint");
+  if (!mapEl) return;
+
+  let points = [];
+  try {
+    const res = await fetch("/api/heatmap");
+    if (!res.ok) throw new Error("Failed to load heatmap data");
+    points = await res.json();
+  } catch {
+    if (hintEl) hintEl.textContent = "Could not load heatmap data.";
+    return;
+  }
+
+  if (!points.length) {
+    if (hintEl) hintEl.textContent = "No waste data yet. Analyze some images to populate the heatmap.";
+    mapEl.style.display = "none";
+    return;
+  }
+
+  allHeatmapData = points;
+
+  const filterEl = document.getElementById("heatmapFilter");
+  if (filterEl) {
+    const labels = [...new Set(points.map(p => p.label))].sort();
+    labels.forEach(label => {
+      const opt = document.createElement("option");
+      opt.value = label;
+      opt.textContent = label;
+      filterEl.appendChild(opt);
+    });
+    filterEl.addEventListener("change", () => updateHeatLayer(filterEl.value));
+  }
+
+  fetchUserLocation(
+    ({ lat, lng }) => {
+      if (hintEl) hintEl.style.display = "none";
+      createHeatmap(lat, lng, points);
+    },
+    () => {
+      const avgLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+      const avgLng = points.reduce((s, p) => s + p.lng, 0) / points.length;
+      if (hintEl) hintEl.textContent = "Showing all waste data (location unavailable).";
+      createHeatmap(avgLat, avgLng, points);
+    }
+  );
+}
+
+function createHeatmap(centerLat, centerLng, points) {
+  heatmapInstance = L.map("heatmap").setView([centerLat, centerLng], 12);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "\u00a9 OpenStreetMap"
+  }).addTo(heatmapInstance);
+
+  const heatData = points.map(p => [p.lat, p.lng, p.count]);
+
+  heatLayer = L.heatLayer(heatData, {
+    radius: 25,
+    blur: 15,
+    maxZoom: 17,
+    max: Math.max(...points.map(p => p.count), 1),
+    gradient: {
+      0.2: "#ffffb2",
+      0.4: "#fecc5c",
+      0.6: "#fd8d3c",
+      0.8: "#f03b20",
+      1.0: "#bd0026"
+    }
+  }).addTo(heatmapInstance);
+
+  setTimeout(() => heatmapInstance.invalidateSize(), 200);
+}
+
+function updateHeatLayer(filterValue) {
+  if (!heatmapInstance || !heatLayer) return;
+
+  const filtered = filterValue === "all"
+    ? allHeatmapData
+    : allHeatmapData.filter(p => p.label === filterValue);
+
+  const heatData = filtered.map(p => [p.lat, p.lng, p.count]);
+  heatLayer.setLatLngs(heatData);
+}
+
 // ───────────────── Auto-init topbar ─────────────────
 
 document.addEventListener("DOMContentLoaded", () => {
