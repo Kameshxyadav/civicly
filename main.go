@@ -54,6 +54,7 @@ type listing struct {
 	Contact   string  `json:"contact"`
 	Lat       float64 `json:"lat"`
 	Lng       float64 `json:"lng"`
+	ImageURL  string  `json:"image_url"`
 	Status    string  `json:"status"`
 	CreatedAt string  `json:"created_at"`
 }
@@ -110,6 +111,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+	if err := os.MkdirAll("uploads", 0o755); err != nil {
+		log.Fatal(err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -118,6 +123,7 @@ func main() {
 	mux.HandleFunc("/api/predictions/", withMethod(http.MethodGet, handleGetPrediction(db)))
 	mux.HandleFunc("/api/listings", handleListings(db))
 	mux.HandleFunc("/api/listings/", handleListingAction(db))
+	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 	mux.HandleFunc("/", serveStatic)
 
 	addr := ":8080"
@@ -190,6 +196,7 @@ CREATE TABLE IF NOT EXISTS listings (
 	contact TEXT NOT NULL,
 	lat REAL NOT NULL,
 	lng REAL NOT NULL,
+	image_url TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'open',
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -203,7 +210,14 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 `
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add image_url column if missing (existing databases).
+	db.Exec(`ALTER TABLE listings ADD COLUMN image_url TEXT NOT NULL DEFAULT ''`)
+
+	return nil
 }
 
 func handlePredict(db *sql.DB) http.HandlerFunc {
@@ -382,7 +396,7 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			rows, err := db.Query(`SELECT id, material, weight_kg, price, contact, lat, lng, status, created_at FROM listings WHERE status = 'open' ORDER BY created_at DESC`)
+			rows, err := db.Query(`SELECT id, material, weight_kg, price, contact, lat, lng, image_url, status, created_at FROM listings WHERE status = 'open' ORDER BY created_at DESC`)
 			if err != nil {
 				http.Error(w, "database error", http.StatusInternalServerError)
 				return
@@ -393,7 +407,7 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 			for rows.Next() {
 				var l listing
 				var created time.Time
-				if err := rows.Scan(&l.ID, &l.Material, &l.WeightKg, &l.Price, &l.Contact, &l.Lat, &l.Lng, &l.Status, &created); err != nil {
+				if err := rows.Scan(&l.ID, &l.Material, &l.WeightKg, &l.Price, &l.Contact, &l.Lat, &l.Lng, &l.ImageURL, &l.Status, &created); err != nil {
 					http.Error(w, "database error", http.StatusInternalServerError)
 					return
 				}
@@ -402,17 +416,43 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 			}
 			writeJSON(w, http.StatusOK, listings)
 		case http.MethodPost:
-			var req createListingRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
+			if err := r.ParseMultipartForm(10 << 20); err != nil {
+				http.Error(w, "invalid multipart form", http.StatusBadRequest)
 				return
 			}
-			if strings.TrimSpace(req.Material) == "" || req.WeightKg <= 0 || req.Price <= 0 || strings.TrimSpace(req.Contact) == "" {
+
+			material := strings.TrimSpace(r.FormValue("material"))
+			weightKg, _ := strconv.ParseFloat(r.FormValue("weight_kg"), 64)
+			price, _ := strconv.ParseFloat(r.FormValue("price"), 64)
+			contact := strings.TrimSpace(r.FormValue("contact"))
+			lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
+			lng, _ := strconv.ParseFloat(r.FormValue("lng"), 64)
+
+			if material == "" || weightKg <= 0 || price <= 0 || contact == "" {
 				http.Error(w, "missing or invalid listing fields", http.StatusBadRequest)
 				return
 			}
 
-			res, err := db.Exec(`INSERT INTO listings (material, weight_kg, price, contact, lat, lng, status) VALUES (?, ?, ?, ?, ?, ?, 'open')`, req.Material, req.WeightKg, req.Price, req.Contact, req.Lat, req.Lng)
+			var imageURL string
+			file, header, err := r.FormFile("image")
+			if err == nil {
+				defer file.Close()
+				ext := filepath.Ext(header.Filename)
+				filename := fmt.Sprintf("%d%s", time.Now().UnixNano(), ext)
+				dst, err := os.Create(filepath.Join("uploads", filename))
+				if err != nil {
+					http.Error(w, "failed to save image", http.StatusInternalServerError)
+					return
+				}
+				defer dst.Close()
+				if _, err := io.Copy(dst, file); err != nil {
+					http.Error(w, "failed to save image", http.StatusInternalServerError)
+					return
+				}
+				imageURL = "/uploads/" + filename
+			}
+
+			res, err := db.Exec(`INSERT INTO listings (material, weight_kg, price, contact, lat, lng, image_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`, material, weightKg, price, contact, lat, lng, imageURL)
 			if err != nil {
 				http.Error(w, "database error", http.StatusInternalServerError)
 				return

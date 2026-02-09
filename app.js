@@ -11,7 +11,41 @@ function toggleMenu() {
   document.getElementById("menuOverlay")?.classList.toggle("open");
 }
 
-function fetchUserLocation(cb) {
+function getStoredLocation() {
+  const lat = Number(localStorage.getItem("userLat"));
+  const lng = Number(localStorage.getItem("userLng"));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng };
+}
+
+function locationErrorMessage(err) {
+  if (!err) return "Location access is required.";
+  switch (err.code) {
+    case err.PERMISSION_DENIED:
+      return "Location permission denied. Enable it and try again.";
+    case err.POSITION_UNAVAILABLE:
+      return "Location unavailable. Check your device settings and try again.";
+    case err.TIMEOUT:
+      return "Location request timed out. Please try again.";
+    default:
+      return "Location access is required.";
+  }
+}
+
+function fetchUserLocation(cb, onError) {
+  const cached = getStoredLocation();
+
+  if (!navigator.geolocation) {
+    if (cached) {
+      cb?.(cached);
+      return;
+    }
+    const msg = "Geolocation is not supported by this browser.";
+    onError?.(msg);
+    alert(msg);
+    return;
+  }
+
   navigator.geolocation.getCurrentPosition(
     pos => {
       userLat = pos.coords.latitude;
@@ -22,8 +56,20 @@ function fetchUserLocation(cb) {
 
       cb?.({ lat: userLat, lng: userLng });
     },
-    () => {
-      alert("Location access is required.");
+    err => {
+      if (cached) {
+        alert("Using last known location. Enable location for better accuracy.");
+        cb?.(cached);
+        return;
+      }
+      const msg = locationErrorMessage(err);
+      onError?.(msg);
+      alert(msg);
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 60000
     }
   );
 }
@@ -64,6 +110,9 @@ async function startAnalyze() {
       analyzeBtn.disabled = false;
       analyzeBtn.textContent = "Analyze Image";
     }
+  }, () => {
+    analyzeBtn.disabled = false;
+    analyzeBtn.textContent = "Analyze Image";
   });
 }
 
@@ -135,6 +184,9 @@ function initSellPage() {
     document.getElementById("sellLocation").value = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
     document.getElementById("sellLat").value = String(lat);
     document.getElementById("sellLng").value = String(lng);
+  }, msg => {
+    const input = document.getElementById("sellLocation");
+    if (input) input.value = msg;
   });
 }
 
@@ -145,24 +197,28 @@ async function submitSellListing() {
   const contact = document.getElementById("sellContact").value.trim();
   const lat = Number(document.getElementById("sellLat").value);
   const lng = Number(document.getElementById("sellLng").value);
+  const imageInput = document.getElementById("sellImage");
 
   if (!material || !weightKg || !price || !contact || Number.isNaN(lat) || Number.isNaN(lng)) {
     alert("Please complete all fields with valid values.");
     return;
   }
 
+  const formData = new FormData();
+  formData.append("material", material);
+  formData.append("weight_kg", String(weightKg));
+  formData.append("price", String(price));
+  formData.append("contact", contact);
+  formData.append("lat", String(lat));
+  formData.append("lng", String(lng));
+  if (imageInput?.files.length) {
+    formData.append("image", imageInput.files[0]);
+  }
+
   try {
     const res = await fetch("/api/listings", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        material,
-        weight_kg: weightKg,
-        price,
-        contact,
-        lat,
-        lng
-      })
+      body: formData
     });
 
     if (!res.ok) {
@@ -196,6 +252,7 @@ async function loadMarketplace() {
       .map(
         l => `
       <div class="listing">
+        ${l.image_url ? `<img class="listing-img" src="${l.image_url}" alt="${l.material}">` : ""}
         <div class="listing-body">
           <strong>${l.material}</strong>
           <p>${l.weight_kg}kg • ₹${l.price}</p>
