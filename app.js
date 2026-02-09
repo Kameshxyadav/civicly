@@ -322,11 +322,32 @@ async function loadResults() {
   }
 }
 
+async function reverseGeocode(lat, lng) {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`,
+      { headers: { "Accept-Language": "en" } }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const a = data.address || {};
+    const city = a.city || a.town || a.village || a.county || "";
+    const state = a.state || "";
+    const country = a.country || "";
+    return [city, state, country].filter(Boolean).join(", ");
+  } catch {
+    return null;
+  }
+}
+
 function initSellPage() {
-  fetchUserLocation(({ lat, lng }) => {
-    document.getElementById("sellLocation").value = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  fetchUserLocation(async ({ lat, lng }) => {
     document.getElementById("sellLat").value = String(lat);
     document.getElementById("sellLng").value = String(lng);
+    const locInput = document.getElementById("sellLocation");
+    locInput.value = "Detecting location...";
+    const place = await reverseGeocode(lat, lng);
+    locInput.value = place || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   }, msg => {
     const input = document.getElementById("sellLocation");
     if (input) input.value = msg;
@@ -395,18 +416,25 @@ async function loadMarketplace() {
       return;
     }
 
+    // Reverse-geocode all listings in parallel
+    const locations = await Promise.all(
+      listings.map(l => reverseGeocode(l.lat, l.lng))
+    );
+
     container.innerHTML = listings
-      .map(l => {
+      .map((l, i) => {
         const isOwner = currentUser && currentUser.id === l.user_id;
         const actionBtn = isOwner
           ? `<button class="listing-btn" onclick="markSold(${l.id})">Mark as Sold</button>`
           : `<button class="listing-btn" onclick="buyListing(${l.id})">Buy Now</button>`;
+        const locText = locations[i] || `${l.lat.toFixed(4)}, ${l.lng.toFixed(4)}`;
         return `
       <div class="listing">
         ${l.image_url ? `<img class="listing-img" src="${l.image_url}" alt="${l.material}">` : ""}
         <div class="listing-body">
           <strong>${l.material}</strong>
           <p>${l.weight_kg}kg &bull; &#8377;${l.price}</p>
+          <p class="listing-location">${locText}</p>
           <p>Contact: ${l.contact}</p>
           ${actionBtn}
         </div>

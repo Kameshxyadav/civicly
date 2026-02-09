@@ -296,6 +296,10 @@ input, select {
 .listing-body {
   padding: 1.125rem;
 }
+.listing-location {
+  font-size: 0.8125rem;
+  color: #737373;
+}
 .listing-btn {
   width: 100%;
   padding: 0.5625rem;
