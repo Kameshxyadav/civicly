@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin &bull; civicLy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="brand" onclick="goHome()">&larr; civicLy</span>
+  </div>
+  <div class="topbar-right" id="topbarRight"></div>
+</header>
+
+<div class="container">
+  <h1 class="page-title">Admin Dashboard</h1>
+
+  <div class="card">
+    <div class="card-label">Users</div>
+    <div style="overflow-x:auto">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Username</th>
+            <th>Password</th>
+            <th>Role</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="adminUsersBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">All Listings</div>
+    <div style="overflow-x:auto">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Material</th>
+            <th>Weight</th>
+            <th>Price</th>
+            <th>Contact</th>
+            <th>Status</th>
+            <th>User ID</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="adminListingsBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+  loadAdminPanel();
+</script>
+</body>
+</html>

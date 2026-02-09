@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Login &bull; civicLy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="brand" onclick="goHome()">&larr; civicLy</span>
+  </div>
+  <div class="topbar-right" id="topbarRight"></div>
+</header>
+
+<div class="container">
+  <h1 class="page-title">Login</h1>
+
+  <div class="card auth-card">
+    <div class="field">
+      <label class="field-label">Username</label>
+      <input type="text" id="loginUsername" placeholder="Username">
+    </div>
+    <div class="field">
+      <label class="field-label">Password</label>
+      <input type="password" id="loginPassword" placeholder="Password">
+    </div>
+    <button class="btn btn-dark" onclick="loginUser()">Login</button>
+    <div class="auth-link" id="authSwitchLink">
+      Don't have an account? <a href="register.html">Register</a>
+    </div>
+    <script>
+      // Pass redirect param to register link
+      const _redir = new URLSearchParams(window.location.search).get("redirect");
+      if (_redir) {
+        document.querySelector("#authSwitchLink a").href = "register.html?redirect=" + encodeURIComponent(_redir);
+      }
+    </script>
+  </div>
+</div>
+
+<footer><a href="admin.html" class="admin-link">Admin</a></footer>
+
+<script src="app.js"></script>
+</body>
+</html>

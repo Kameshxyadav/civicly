@@ -9,10 +9,13 @@
 <body>
 
 <header class="topbar">
-  <button class="hamburger" onclick="toggleMenu()">
-    <span></span><span></span><span></span>
-  </button>
-  <span class="brand">civicLy</span>
+  <div class="topbar-left">
+    <button class="hamburger" onclick="toggleMenu()">
+      <span></span><span></span><span></span>
+    </button>
+    <span class="brand">civicLy</span>
+  </div>
+  <div class="topbar-right" id="topbarRight"></div>
 </header>
 
 <div class="menu-overlay" id="menuOverlay" onclick="toggleMenu()"></div>
@@ -21,6 +24,7 @@
     <a href="index.html">Home</a>
     <a href="sell.html">Sell</a>
     <a href="buy.html">Buy</a>
+    <div id="menuAuthLinks"></div>
   </nav>
 </aside>
 
@@ -40,6 +44,8 @@
     <button class="btn btn-dark" onclick="startAnalyze()">Analyze Image</button>
   </div>
 </div>
+
+<footer><a href="admin.html" class="admin-link">Admin</a></footer>
 
 <script src="app.js"></script>
 </body>

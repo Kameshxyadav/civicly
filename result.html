@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Result • civicLy</title>
+  <title>Result &bull; civicLy</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <link rel="stylesheet" href="style.css">
@@ -11,7 +11,10 @@
 <body>
 
 <header class="topbar">
-  <span class="brand" onclick="goHome()">← civicLy</span>
+  <div class="topbar-left">
+    <span class="brand" onclick="goHome()">&larr; civicLy</span>
+  </div>
+  <div class="topbar-right" id="topbarRight"></div>
 </header>
 
 <div class="container">
@@ -34,6 +37,8 @@
     <div id="map" class="home-map"></div>
   </div>
 </div>
+
+<footer><a href="admin.html" class="admin-link">Admin</a></footer>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

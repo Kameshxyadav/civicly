@@ -1,6 +1,7 @@
 let userLat;
 let userLng;
 let wasteChart;
+let currentUser = null;
 
 function goHome() {
   window.location.href = "index.html";
@@ -73,6 +74,148 @@ function fetchUserLocation(cb, onError) {
     }
   );
 }
+
+// ───────────────── Auth ─────────────────
+
+async function checkAuth() {
+  try {
+    const res = await fetch("/api/me");
+    if (!res.ok) return null;
+    const data = await res.json();
+    currentUser = data;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+async function updateTopbar() {
+  await checkAuth();
+  const topbarRight = document.getElementById("topbarRight");
+  if (!topbarRight) return;
+
+  if (currentUser) {
+    topbarRight.innerHTML = `
+      <span class="topbar-user">${currentUser.username}</span>
+      <button class="notif-bell" onclick="toggleNotifications()">
+        &#128276;
+        ${currentUser.unread > 0 ? `<span class="notif-badge">${currentUser.unread}</span>` : ""}
+      </button>
+      <div class="notif-panel" id="notifPanel"></div>
+      <button class="btn-link" onclick="logoutUser()">Logout</button>
+    `;
+  } else {
+    topbarRight.innerHTML = `<a class="btn-link" href="login.html">Login</a>`;
+  }
+
+  // Update hamburger menu auth links
+  const menuAuthLinks = document.getElementById("menuAuthLinks");
+  if (menuAuthLinks) {
+    if (currentUser) {
+      menuAuthLinks.innerHTML = `<a href="#" onclick="logoutUser(); return false;">Logout (${currentUser.username})</a>`;
+    } else {
+      menuAuthLinks.innerHTML = `<a href="login.html">Login</a>`;
+    }
+  }
+}
+
+function getRedirectUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("redirect") || "index.html";
+}
+
+async function loginUser() {
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  if (!username || !password) {
+    alert("Please enter username and password.");
+    return;
+  }
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    window.location.href = getRedirectUrl();
+  } catch (err) {
+    alert(`Login failed: ${err.message || err}`);
+  }
+}
+
+async function registerUser() {
+  const username = document.getElementById("regUsername").value.trim();
+  const password = document.getElementById("regPassword").value;
+  if (!username || !password) {
+    alert("Please enter username and password.");
+    return;
+  }
+  try {
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password })
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    window.location.href = getRedirectUrl();
+  } catch (err) {
+    alert(`Registration failed: ${err.message || err}`);
+  }
+}
+
+async function logoutUser() {
+  await fetch("/api/logout", { method: "POST" });
+  currentUser = null;
+  window.location.href = "index.html";
+}
+
+async function checkLoginOrRedirect() {
+  const user = await checkAuth();
+  if (!user) {
+    window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname);
+  }
+}
+
+// ───────────────── Notifications ─────────────────
+
+async function toggleNotifications() {
+  const panel = document.getElementById("notifPanel");
+  if (!panel) return;
+
+  if (panel.classList.contains("open")) {
+    panel.classList.remove("open");
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/notifications");
+    if (!res.ok) return;
+    const notifs = await res.json();
+
+    if (!notifs || !notifs.length) {
+      panel.innerHTML = `<div class="notif-item">No notifications</div>`;
+    } else {
+      panel.innerHTML = notifs.map(n =>
+        `<div class="notif-item ${n.is_read ? "" : "notif-unread"}">${n.message}</div>`
+      ).join("");
+    }
+    panel.classList.add("open");
+
+    // Mark all as read
+    await fetch("/api/notifications/read", { method: "POST" });
+    const badge = document.querySelector(".notif-badge");
+    if (badge) badge.remove();
+  } catch {
+    // ignore
+  }
+}
+
+// ───────────────── Analyze ─────────────────
 
 async function startAnalyze() {
   const fileInput = document.getElementById("azFile");
@@ -162,7 +305,7 @@ async function loadResults() {
     const map = L.map("map").setView([data.user_lat, data.user_lng], 13);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap"
+      attribution: "\u00a9 OpenStreetMap"
     }).addTo(map);
 
     data.pins.forEach(p => {
@@ -232,9 +375,13 @@ async function submitSellListing() {
   }
 }
 
+// ───────────────── Marketplace ─────────────────
+
 async function loadMarketplace() {
   const container = document.getElementById("listingsGrid");
   if (!container) return;
+
+  await checkAuth();
 
   try {
     const res = await fetch("/api/listings");
@@ -243,25 +390,29 @@ async function loadMarketplace() {
     }
 
     const listings = await res.json();
-    if (!listings.length) {
+    if (!listings || !listings.length) {
       container.innerHTML = "<p>No open listings yet.</p>";
       return;
     }
 
     container.innerHTML = listings
-      .map(
-        l => `
+      .map(l => {
+        const isOwner = currentUser && currentUser.id === l.user_id;
+        const actionBtn = isOwner
+          ? `<button class="listing-btn" onclick="markSold(${l.id})">Mark as Sold</button>`
+          : `<button class="listing-btn" onclick="buyListing(${l.id})">Buy Now</button>`;
+        return `
       <div class="listing">
         ${l.image_url ? `<img class="listing-img" src="${l.image_url}" alt="${l.material}">` : ""}
         <div class="listing-body">
           <strong>${l.material}</strong>
-          <p>${l.weight_kg}kg • ₹${l.price}</p>
+          <p>${l.weight_kg}kg &bull; &#8377;${l.price}</p>
           <p>Contact: ${l.contact}</p>
-          <button class="listing-btn" onclick="buyListing(${l.id})">Buy Now</button>
+          ${actionBtn}
         </div>
       </div>
-    `
-      )
+    `;
+      })
       .join("");
   } catch (err) {
     container.innerHTML = `<p>Failed to load listings: ${err.message || err}</p>`;
@@ -269,6 +420,11 @@ async function loadMarketplace() {
 }
 
 async function buyListing(listingId) {
+  if (!currentUser) {
+    alert("Please login to purchase.");
+    window.location.href = "login.html?redirect=" + encodeURIComponent(window.location.pathname);
+    return;
+  }
   const buyerContact = prompt("Enter your contact number to confirm purchase:");
   if (!buyerContact || !buyerContact.trim()) return;
 
@@ -289,3 +445,61 @@ async function buyListing(listingId) {
     alert(`Purchase failed: ${err.message || err}`);
   }
 }
+
+async function markSold(listingId) {
+  if (!confirm("Mark this listing as sold?")) return;
+  try {
+    const res = await fetch(`/api/listings/${listingId}/sold`, { method: "POST" });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    alert("Listing marked as sold.");
+    loadMarketplace();
+  } catch (err) {
+    alert(`Failed: ${err.message || err}`);
+  }
+}
+
+// ───────────────── Admin ─────────────────
+
+async function loadAdminPanel() {
+  const user = await checkAuth();
+  if (!user || user.role !== "admin") {
+    alert("Admin access required.");
+    window.location.href = "login.html";
+    return;
+  }
+  await updateTopbar();
+
+  // Load users
+  try {
+    const res = await fetch("/api/admin/users");
+    if (!res.ok) throw new Error("Failed to load users");
+    const users = await res.json();
+    const tbody = document.getElementById("adminUsersBody");
+    if (tbody && users) {
+      tbody.innerHTML = users.map(u =>
+        `<tr><td>${u.id}</td><td>${u.username}</td><td>${u.password}</td><td>${u.role}</td><td>${u.created_at}</td></tr>`
+      ).join("");
+    }
+  } catch { /* ignore */ }
+
+  // Load listings
+  try {
+    const res = await fetch("/api/admin/listings");
+    if (!res.ok) throw new Error("Failed to load listings");
+    const listings = await res.json();
+    const tbody = document.getElementById("adminListingsBody");
+    if (tbody && listings) {
+      tbody.innerHTML = listings.map(l =>
+        `<tr><td>${l.id}</td><td>${l.material}</td><td>${l.weight_kg}</td><td>${l.price}</td><td>${l.contact}</td><td>${l.status}</td><td>${l.user_id}</td><td>${l.created_at}</td></tr>`
+      ).join("");
+    }
+  } catch { /* ignore */ }
+}
+
+// ───────────────── Auto-init topbar ─────────────────
+
+document.addEventListener("DOMContentLoaded", () => {
+  updateTopbar();
+});

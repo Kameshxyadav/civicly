@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +58,29 @@ type listing struct {
 	Lng       float64 `json:"lng"`
 	ImageURL  string  `json:"image_url"`
 	Status    string  `json:"status"`
+	UserID    int64   `json:"user_id"`
 	CreatedAt string  `json:"created_at"`
+}
+
+type user struct {
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	Password  string `json:"password,omitempty"`
+	Role      string `json:"role"`
+	CreatedAt string `json:"created_at"`
+}
+
+type notification struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"user_id"`
+	Message   string `json:"message"`
+	IsRead    bool   `json:"is_read"`
+	CreatedAt string `json:"created_at"`
+}
+
+type authRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type createListingRequest struct {
@@ -123,6 +147,14 @@ func main() {
 	mux.HandleFunc("/api/predictions/", withMethod(http.MethodGet, handleGetPrediction(db)))
 	mux.HandleFunc("/api/listings", handleListings(db))
 	mux.HandleFunc("/api/listings/", handleListingAction(db))
+	mux.HandleFunc("/api/register", withMethod(http.MethodPost, handleRegister(db)))
+	mux.HandleFunc("/api/login", withMethod(http.MethodPost, handleLogin(db)))
+	mux.HandleFunc("/api/logout", withMethod(http.MethodPost, handleLogout(db)))
+	mux.HandleFunc("/api/me", withMethod(http.MethodGet, handleMe(db)))
+	mux.HandleFunc("/api/notifications", withMethod(http.MethodGet, handleGetNotifications(db)))
+	mux.HandleFunc("/api/notifications/read", withMethod(http.MethodPost, handleMarkNotificationsRead(db)))
+	mux.HandleFunc("/api/admin/users", withMethod(http.MethodGet, handleAdminUsers(db)))
+	mux.HandleFunc("/api/admin/listings", withMethod(http.MethodGet, handleAdminListings(db)))
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 	mux.HandleFunc("/", serveStatic)
 
@@ -208,14 +240,46 @@ CREATE TABLE IF NOT EXISTS trades (
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY(listing_id) REFERENCES listings(id)
 );
+
+CREATE TABLE IF NOT EXISTS users (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	username TEXT NOT NULL UNIQUE,
+	password TEXT NOT NULL,
+	role TEXT NOT NULL DEFAULT 'user',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+	token TEXT PRIMARY KEY,
+	user_id INTEGER NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id INTEGER NOT NULL,
+	message TEXT NOT NULL,
+	is_read INTEGER NOT NULL DEFAULT 0,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
 		return err
 	}
 
-	// Migration: add image_url column if missing (existing databases).
+	// Migrations for existing databases.
 	db.Exec(`ALTER TABLE listings ADD COLUMN image_url TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE listings ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0`)
+
+	// Seed admin user if not exists.
+	var count int
+	db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = 'admin'`).Scan(&count)
+	if count == 0 {
+		db.Exec(`INSERT INTO users (username, password, role) VALUES ('admin', 'admin123', 'admin')`)
+	}
 
 	return nil
 }
@@ -396,7 +460,7 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			rows, err := db.Query(`SELECT id, material, weight_kg, price, contact, lat, lng, image_url, status, created_at FROM listings WHERE status = 'open' ORDER BY created_at DESC`)
+			rows, err := db.Query(`SELECT id, material, weight_kg, price, contact, lat, lng, image_url, status, user_id, created_at FROM listings WHERE status = 'open' ORDER BY created_at DESC`)
 			if err != nil {
 				http.Error(w, "database error", http.StatusInternalServerError)
 				return
@@ -407,7 +471,7 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 			for rows.Next() {
 				var l listing
 				var created time.Time
-				if err := rows.Scan(&l.ID, &l.Material, &l.WeightKg, &l.Price, &l.Contact, &l.Lat, &l.Lng, &l.ImageURL, &l.Status, &created); err != nil {
+				if err := rows.Scan(&l.ID, &l.Material, &l.WeightKg, &l.Price, &l.Contact, &l.Lat, &l.Lng, &l.ImageURL, &l.Status, &l.UserID, &created); err != nil {
 					http.Error(w, "database error", http.StatusInternalServerError)
 					return
 				}
@@ -416,6 +480,12 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 			}
 			writeJSON(w, http.StatusOK, listings)
 		case http.MethodPost:
+			sessionUser, err := getSessionUser(db, r)
+			if err != nil {
+				http.Error(w, "login required", http.StatusUnauthorized)
+				return
+			}
+
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				http.Error(w, "invalid multipart form", http.StatusBadRequest)
 				return
@@ -452,7 +522,7 @@ func handleListings(db *sql.DB) http.HandlerFunc {
 				imageURL = "/uploads/" + filename
 			}
 
-			res, err := db.Exec(`INSERT INTO listings (material, weight_kg, price, contact, lat, lng, image_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')`, material, weightKg, price, contact, lat, lng, imageURL)
+			res, err := db.Exec(`INSERT INTO listings (material, weight_kg, price, contact, lat, lng, image_url, status, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`, material, weightKg, price, contact, lat, lng, imageURL, sessionUser.ID)
 			if err != nil {
 				http.Error(w, "database error", http.StatusInternalServerError)
 				return
@@ -476,7 +546,7 @@ func handleListingAction(db *sql.DB) http.HandlerFunc {
 
 		trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/listings/"), "/")
 		parts := strings.Split(trimmed, "/")
-		if len(parts) != 2 || parts[1] != "buy" {
+		if len(parts) != 2 || (parts[1] != "buy" && parts[1] != "sold") {
 			http.Error(w, "invalid listing action", http.StatusBadRequest)
 			return
 		}
@@ -486,6 +556,42 @@ func handleListingAction(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		action := parts[1]
+
+		if action == "sold" {
+			sessionUser, err := getSessionUser(db, r)
+			if err != nil {
+				http.Error(w, "login required", http.StatusUnauthorized)
+				return
+			}
+			var ownerID int64
+			var status string
+			err = db.QueryRow(`SELECT user_id, status FROM listings WHERE id = ?`, listingID).Scan(&ownerID, &status)
+			if err == sql.ErrNoRows {
+				http.Error(w, "listing not found", http.StatusNotFound)
+				return
+			}
+			if err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			if ownerID != sessionUser.ID {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			if status != "open" {
+				http.Error(w, "listing already sold", http.StatusConflict)
+				return
+			}
+			if _, err := db.Exec(`UPDATE listings SET status = 'sold' WHERE id = ?`, listingID); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"message": "listing marked as sold", "listing_id": listingID})
+			return
+		}
+
+		// action == "buy"
 		var req buyRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
@@ -504,7 +610,9 @@ func handleListingAction(db *sql.DB) http.HandlerFunc {
 		defer tx.Rollback()
 
 		var status string
-		err = tx.QueryRow(`SELECT status FROM listings WHERE id = ?`, listingID).Scan(&status)
+		var material string
+		var sellerUserID int64
+		err = tx.QueryRow(`SELECT status, material, user_id FROM listings WHERE id = ?`, listingID).Scan(&status, &material, &sellerUserID)
 		if err == sql.ErrNoRows {
 			http.Error(w, "listing not found", http.StatusNotFound)
 			return
@@ -525,6 +633,12 @@ func handleListingAction(db *sql.DB) http.HandlerFunc {
 		if _, err := tx.Exec(`UPDATE listings SET status = 'sold' WHERE id = ?`, listingID); err != nil {
 			http.Error(w, "database error", http.StatusInternalServerError)
 			return
+		}
+
+		// Notify the seller if they have an account.
+		if sellerUserID > 0 {
+			msg := fmt.Sprintf("Your %s listing was purchased! Buyer contact: %s", material, req.BuyerContact)
+			tx.Exec(`INSERT INTO notifications (user_id, message) VALUES (?, ?)`, sellerUserID, msg)
 		}
 
 		if err := tx.Commit(); err != nil {
@@ -696,6 +810,262 @@ func withMethod(method string, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+// ───────────────── Auth helpers ─────────────────
+
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func getSessionUser(db *sql.DB, r *http.Request) (*user, error) {
+	cookie, err := r.Cookie("session")
+	if err != nil {
+		return nil, errors.New("no session")
+	}
+	var u user
+	var created time.Time
+	err = db.QueryRow(`SELECT u.id, u.username, u.role, u.created_at FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token = ?`, cookie.Value).
+		Scan(&u.ID, &u.Username, &u.Role, &created)
+	if err != nil {
+		return nil, errors.New("invalid session")
+	}
+	u.CreatedAt = created.Format(time.RFC3339)
+	return &u, nil
+}
+
+func requireAdmin(db *sql.DB, r *http.Request) (*user, error) {
+	u, err := getSessionUser(db, r)
+	if err != nil {
+		return nil, err
+	}
+	if u.Role != "admin" {
+		return nil, errors.New("admin required")
+	}
+	return u, nil
+}
+
+// ───────────────── Auth handlers ─────────────────
+
+func handleRegister(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req authRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		req.Username = strings.TrimSpace(req.Username)
+		if req.Username == "" || req.Password == "" {
+			http.Error(w, "username and password required", http.StatusBadRequest)
+			return
+		}
+
+		res, err := db.Exec(`INSERT INTO users (username, password, role) VALUES (?, ?, 'user')`, req.Username, req.Password)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				http.Error(w, "username already taken", http.StatusConflict)
+				return
+			}
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		userID, _ := res.LastInsertId()
+
+		token, err := generateToken()
+		if err != nil {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		db.Exec(`INSERT INTO sessions (token, user_id) VALUES (?, ?)`, token, userID)
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session",
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   7 * 24 * 60 * 60,
+		})
+		writeJSON(w, http.StatusCreated, map[string]any{"id": userID, "username": req.Username, "role": "user"})
+	}
+}
+
+func handleLogin(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req authRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		req.Username = strings.TrimSpace(req.Username)
+
+		var u user
+		var created time.Time
+		err := db.QueryRow(`SELECT id, username, password, role, created_at FROM users WHERE username = ?`, req.Username).
+			Scan(&u.ID, &u.Username, &u.Password, &u.Role, &created)
+		if err != nil || u.Password != req.Password {
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			return
+		}
+		u.CreatedAt = created.Format(time.RFC3339)
+
+		token, err := generateToken()
+		if err != nil {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		db.Exec(`INSERT INTO sessions (token, user_id) VALUES (?, ?)`, token, u.ID)
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session",
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   7 * 24 * 60 * 60,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"id": u.ID, "username": u.Username, "role": u.Role})
+	}
+}
+
+func handleLogout(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("session")
+		if err == nil {
+			db.Exec(`DELETE FROM sessions WHERE token = ?`, cookie.Value)
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session",
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   -1,
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "logged out"})
+	}
+}
+
+func handleMe(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := getSessionUser(db, r)
+		if err != nil {
+			http.Error(w, "not logged in", http.StatusUnauthorized)
+			return
+		}
+		var unread int
+		db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0`, u.ID).Scan(&unread)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":       u.ID,
+			"username": u.Username,
+			"role":     u.Role,
+			"unread":   unread,
+		})
+	}
+}
+
+// ───────────────── Notification handlers ─────────────────
+
+func handleGetNotifications(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := getSessionUser(db, r)
+		if err != nil {
+			http.Error(w, "login required", http.StatusUnauthorized)
+			return
+		}
+		rows, err := db.Query(`SELECT id, user_id, message, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`, u.ID)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var notifs []notification
+		for rows.Next() {
+			var n notification
+			var created time.Time
+			var isReadInt int
+			if err := rows.Scan(&n.ID, &n.UserID, &n.Message, &isReadInt, &created); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			n.IsRead = isReadInt != 0
+			n.CreatedAt = created.Format(time.RFC3339)
+			notifs = append(notifs, n)
+		}
+		writeJSON(w, http.StatusOK, notifs)
+	}
+}
+
+func handleMarkNotificationsRead(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := getSessionUser(db, r)
+		if err != nil {
+			http.Error(w, "login required", http.StatusUnauthorized)
+			return
+		}
+		db.Exec(`UPDATE notifications SET is_read = 1 WHERE user_id = ?`, u.ID)
+		writeJSON(w, http.StatusOK, map[string]string{"message": "notifications marked as read"})
+	}
+}
+
+// ───────────────── Admin handlers ─────────────────
+
+func handleAdminUsers(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := requireAdmin(db, r); err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		rows, err := db.Query(`SELECT id, username, password, role, created_at FROM users ORDER BY id`)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var users []user
+		for rows.Next() {
+			var u user
+			var created time.Time
+			if err := rows.Scan(&u.ID, &u.Username, &u.Password, &u.Role, &created); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			u.CreatedAt = created.Format(time.RFC3339)
+			users = append(users, u)
+		}
+		writeJSON(w, http.StatusOK, users)
+	}
+}
+
+func handleAdminListings(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, err := requireAdmin(db, r); err != nil {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		rows, err := db.Query(`SELECT id, material, weight_kg, price, contact, lat, lng, image_url, status, user_id, created_at FROM listings ORDER BY created_at DESC`)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var listings []listing
+		for rows.Next() {
+			var l listing
+			var created time.Time
+			if err := rows.Scan(&l.ID, &l.Material, &l.WeightKg, &l.Price, &l.Contact, &l.Lat, &l.Lng, &l.ImageURL, &l.Status, &l.UserID, &created); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			l.CreatedAt = created.Format(time.RFC3339)
+			listings = append(listings, l)
+		}
+		writeJSON(w, http.StatusOK, listings)
 	}
 }
 
